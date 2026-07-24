@@ -9,6 +9,10 @@ import urllib.request
 import urllib.error
 from mock_data import MOCK_SCENARIOS
 from rule_engine import match_by_rule, RULE_DATABASE
+from accounting_common_sense import (
+    check_capitalization,
+    render_capitalization_ui,
+)
 
 # ─── 页面配置 ───────────────────────────────────────────────
 st.set_page_config(
@@ -380,12 +384,108 @@ def display_voucher_result(result: dict, user_input: str):
         st.success("✅ 经初步校验，该笔业务分录合理，未发现明显税会差异。")
 
 
-# ─── 处理推荐逻辑 ───────────────────────────────────────────
+# ─── 展示预设场景表格（辅助函数） ──────────────────────────
+
+def _show_scenario_table():
+    """展示所有预设业务场景的参考表格"""
+    with st.expander("📖 查看所有预设业务场景（共{}个）".format(
+        len(RULE_DATABASE) + len(MOCK_SCENARIOS)
+    ), expanded=True):
+        all_scenarios = []
+        seen = set()
+        for s in MOCK_SCENARIOS:
+            key = (s["debit_account"], s["credit_account"])
+            if key not in seen:
+                seen.add(key)
+                all_scenarios.append({
+                    "description": s["description"],
+                    "debit": s["debit_account"],
+                    "credit": s["credit_account"],
+                    "debit_amount": s["debit_amount"],
+                    "credit_amount": s["credit_amount"],
+                    "warning": s["warning"],
+                    "source": "演示数据",
+                })
+        for r in RULE_DATABASE:
+            key = (r["debit"], r["credit"])
+            if key not in seen:
+                seen.add(key)
+                all_scenarios.append({
+                    "description": r["description"],
+                    "debit": r["debit"],
+                    "credit": r["credit"],
+                    "debit_amount": None,
+                    "credit_amount": None,
+                    "warning": r["warning"],
+                    "source": "规则库",
+                })
+
+        table_data = []
+        for i, s in enumerate(all_scenarios, 1):
+            amount_str = (
+                f"¥{s['debit_amount']:,.2f}" if s["debit_amount"] else "—"
+            )
+            table_data.append({
+                "序号": i,
+                "业务描述": s["description"],
+                "借方科目": s["debit"],
+                "贷方科目": s["credit"],
+                "金额": amount_str,
+                "校验提示": s["warning"] or "无",
+            })
+
+        st.dataframe(
+            table_data,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "序号": st.column_config.NumberColumn("序号", width="small"),
+                "业务描述": st.column_config.TextColumn("业务描述", width="large"),
+                "借方科目": st.column_config.TextColumn("借方科目", width="medium"),
+                "贷方科目": st.column_config.TextColumn("贷方科目", width="medium"),
+                "金额": st.column_config.TextColumn("金额", width="small"),
+                "校验提示": st.column_config.TextColumn("校验提示", width="large"),
+            },
+        )
+
+
+# ── 用 session_state 记住用户触发了推荐 ──
 if recommend_clicked:
-    if not user_input.strip():
+    st.session_state["recommend_triggered"] = True
+    st.session_state["recommend_text"] = user_input.strip()
+
+# ─── 处理推荐逻辑 ───────────────────────────────────────────
+if st.session_state.get("recommend_triggered", False):
+    text = st.session_state["recommend_text"]
+
+    if not text:
         st.warning("⚠️ 请先输入业务描述再点击推荐！")
+        st.session_state["recommend_triggered"] = False
     else:
-        text = user_input.strip()
+        # ── 第〇层：会计常识预检（资本化/费用化判断） ──
+        st.markdown("---")
+        st.markdown("### 🔶 会计常识预检")
+
+        verdict_result = check_capitalization(text)
+        needs_manual = render_capitalization_ui(verdict_result)
+
+        # 如果预检结果是"强制手动干预"且用户尚未确认，阻止自动推荐
+        if needs_manual:
+            st.info(
+                "💡 请在上方选择科目方向并点击【确认选择此科目方向】，"
+                "系统将根据您的选择调整推荐结果。"
+            )
+            # 仍然展示场景表格供参考
+            _show_scenario_table()
+            # 停止执行，等待用户确认
+            st.stop()
+
+        # 用户已确认 → 清除 trigger
+        st.session_state["recommend_triggered"] = False
+
+        # 如果用户已确认模糊地带的科目选择
+        user_chosen_account = st.session_state.get("manual_account_selected", None)
+        capitalization_confirmed = st.session_state.get("capitalization_confirmed", False)
 
         # ── 第一层：规则库精确匹配 ──
         result = match_by_rule(text)
@@ -397,6 +497,16 @@ if recommend_clicked:
             # 展示匹配到的规则说明
             st.info(f"📌 匹配规则：{result['description']}")
 
+            # 如果用户之前确认了科目选择，展示对照
+            if capitalization_confirmed and user_chosen_account:
+                st.markdown(
+                    f'<div class="warning-box" style="background:#e8f4fd; border-color:#0d6efd;">'
+                    f'<span style="font-size:1rem;">💡 您已确认选择「{user_chosen_account}」，'
+                    f'与规则库推荐结果不一致时请以您的判断为准。</span>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
         else:
             # ── 第二层：AI 大模型兜底匹配 ──
             with st.spinner("🤖 规则库未匹配到，正在调用 AI 智能分析..."):
@@ -404,6 +514,16 @@ if recommend_clicked:
 
             if result is not None:
                 display_voucher_result(result, text)
+
+                # 如果用户之前确认了科目选择，展示对照
+                if capitalization_confirmed and user_chosen_account:
+                    st.markdown(
+                        f'<div class="warning-box" style="background:#e8f4fd; border-color:#0d6efd;">'
+                        f'<span style="font-size:1rem;">💡 您已确认选择「{user_chosen_account}」，'
+                        f'与 AI 推荐结果不一致时请以您的判断为准。</span>'
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
             else:
                 # 两层都失败 → 引导用户输入关键词 + 手工入账按钮
                 st.warning(
@@ -419,67 +539,7 @@ if recommend_clicked:
                     )
 
             # ── 预设场景参考表格（规则库 + mock_data） ──
-            with st.expander("📖 查看所有预设业务场景（共{}个）".format(
-                len(RULE_DATABASE) + len(MOCK_SCENARIOS)
-            ), expanded=True):
-                # 合并所有场景
-                all_scenarios = []
-                seen = set()
-                for s in MOCK_SCENARIOS:
-                    key = (s["debit_account"], s["credit_account"])
-                    if key not in seen:
-                        seen.add(key)
-                        all_scenarios.append({
-                            "description": s["description"],
-                            "debit": s["debit_account"],
-                            "credit": s["credit_account"],
-                            "debit_amount": s["debit_amount"],
-                            "credit_amount": s["credit_amount"],
-                            "warning": s["warning"],
-                            "source": "演示数据",
-                        })
-                for r in RULE_DATABASE:
-                    key = (r["debit"], r["credit"])
-                    if key not in seen:
-                        seen.add(key)
-                        all_scenarios.append({
-                            "description": r["description"],
-                            "debit": r["debit"],
-                            "credit": r["credit"],
-                            "debit_amount": None,
-                            "credit_amount": None,
-                            "warning": r["warning"],
-                            "source": "规则库",
-                        })
-
-                # 用 DataFrame 展示
-                table_data = []
-                for i, s in enumerate(all_scenarios, 1):
-                    amount_str = (
-                        f"¥{s['debit_amount']:,.2f}" if s["debit_amount"] else "—"
-                    )
-                    table_data.append({
-                        "序号": i,
-                        "业务描述": s["description"],
-                        "借方科目": s["debit"],
-                        "贷方科目": s["credit"],
-                        "金额": amount_str,
-                        "校验提示": s["warning"] or "无",
-                    })
-
-                st.dataframe(
-                    table_data,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "序号": st.column_config.NumberColumn("序号", width="small"),
-                        "业务描述": st.column_config.TextColumn("业务描述", width="large"),
-                        "借方科目": st.column_config.TextColumn("借方科目", width="medium"),
-                        "贷方科目": st.column_config.TextColumn("贷方科目", width="medium"),
-                        "金额": st.column_config.TextColumn("金额", width="small"),
-                        "校验提示": st.column_config.TextColumn("校验提示", width="large"),
-                    },
-                )
+            _show_scenario_table()
 
 # ─── 手工录入凭证区域 ───────────────────────────────────────
 st.markdown("---")
