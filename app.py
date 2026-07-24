@@ -258,30 +258,64 @@ def call_ai_for_recommendation(user_text: str):
 
 # ─── 展示推荐结果（通用函数） ──────────────────────────────
 
-def display_voucher_result(result: dict, user_input: str):
+def display_voucher_result(result: dict, user_input: str, verdict_result: dict = None):
     """展示凭证推荐结果卡片、表格、校验区域"""
 
     is_ai = result.get("source") == "ai"
 
-    # ── 合规置信度标签 ──
-    if not is_ai:
-        confidence_badge = (
-            '<span style="'
-            "display:inline-block; background:#d4edda; color:#155724; "
-            "border:1px solid #c3e6cb; border-radius:20px; "
-            "padding:0.3rem 1rem; font-size:0.85rem; font-weight:600; "
-            "margin-bottom:0.8rem;"
-            '">✅ 规则库精准匹配（置信度 95%）</span>'
-        )
+    # ── 根据预检结果动态设置置信度 ──
+    if verdict_result:
+        v = verdict_result["verdict"]
+        c = verdict_result["confidence"]
+        # 费用化/资本化高置信度 + 规则库匹配 = 95%
+        if not is_ai and ((v == "expense" and c == "high") or (v == "capital" and c == "high")):
+            confidence_badge = (
+                '<span style="'
+                "display:inline-block; background:#d4edda; color:#155724; "
+                "border:1px solid #c3e6cb; border-radius:20px; "
+                "padding:0.3rem 1rem; font-size:0.85rem; font-weight:600; "
+                "margin-bottom:0.8rem;"
+                '">✅ 规则库精准匹配（置信度 95%）</span>'
+            )
+        elif not is_ai:
+            # 规则库匹配但预检置信度不高（如跨系统判断）
+            confidence_badge = (
+                '<span style="'
+                "display:inline-block; background:#fff3cd; color:#856404; "
+                "border:1px solid #ffc107; border-radius:20px; "
+                "padding:0.3rem 1rem; font-size:0.85rem; font-weight:600; "
+                "margin-bottom:0.8rem;"
+                '">⚠️ 规则库匹配（置信度 60%，请人工复核）</span>'
+            )
+        else:
+            confidence_badge = (
+                '<span style="'
+                "display:inline-block; background:#fff3cd; color:#856404; "
+                "border:1px solid #ffc107; border-radius:20px; "
+                "padding:0.3rem 1rem; font-size:0.85rem; font-weight:600; "
+                "margin-bottom:0.8rem;"
+                '">⚠️ AI 智能推荐（置信度 70%，请人工复核）</span>'
+            )
     else:
-        confidence_badge = (
-            '<span style="'
-            "display:inline-block; background:#fff3cd; color:#856404; "
-            "border:1px solid #ffc107; border-radius:20px; "
-            "padding:0.3rem 1rem; font-size:0.85rem; font-weight:600; "
-            "margin-bottom:0.8rem;"
-            '">⚠️ AI 智能推荐（置信度 70%，请人工复核）</span>'
-        )
+        # 无预检结果时的默认值
+        if not is_ai:
+            confidence_badge = (
+                '<span style="'
+                "display:inline-block; background:#d4edda; color:#155724; "
+                "border:1px solid #c3e6cb; border-radius:20px; "
+                "padding:0.3rem 1rem; font-size:0.85rem; font-weight:600; "
+                "margin-bottom:0.8rem;"
+                '">✅ 规则库精准匹配（置信度 95%）</span>'
+            )
+        else:
+            confidence_badge = (
+                '<span style="'
+                "display:inline-block; background:#fff3cd; color:#856404; "
+                "border:1px solid #ffc107; border-radius:20px; "
+                "padding:0.3rem 1rem; font-size:0.85rem; font-weight:600; "
+                "margin-bottom:0.8rem;"
+                '">⚠️ AI 智能推荐（置信度 70%，请人工复核）</span>'
+            )
 
     # ── 凭证推荐结果卡片 ──
     st.markdown(
@@ -480,8 +514,22 @@ if st.session_state.get("recommend_triggered", False):
             # 停止执行，等待用户确认
             st.stop()
 
-        # 用户已确认 → 清除 trigger
+        # ── 高置信度预检（绿色框）也加一个确认按钮 ──
+        st.markdown("---")
+        st.markdown("### 📋 生成凭证")
+
+        # 检查用户是否已点击"确认并生成凭证"
+        if not st.session_state.get("voucher_confirmed", False):
+            if st.button("✅ 确认并生成凭证", key="confirm_voucher", type="primary", use_container_width=True):
+                st.session_state["voucher_confirmed"] = True
+                st.rerun()
+            st.info("👆 请确认上述预检结果无误后，点击上方按钮生成推荐凭证。")
+            _show_scenario_table()
+            st.stop()
+
+        # 用户已确认 → 清除 trigger 和确认状态（供下次使用）
         st.session_state["recommend_triggered"] = False
+        st.session_state["voucher_confirmed"] = False
 
         # 如果用户已确认模糊地带的科目选择
         user_chosen_account = st.session_state.get("manual_account_selected", None)
@@ -491,8 +539,8 @@ if st.session_state.get("recommend_triggered", False):
         result = match_by_rule(text)
 
         if result is not None:
-            # 规则库匹配成功
-            display_voucher_result(result, text)
+            # 规则库匹配成功，传入 verdict_result 用于置信度判断
+            display_voucher_result(result, text, verdict_result)
 
             # 展示匹配到的规则说明
             st.info(f"📌 匹配规则：{result['description']}")
@@ -513,7 +561,7 @@ if st.session_state.get("recommend_triggered", False):
                 result = call_ai_for_recommendation(text)
 
             if result is not None:
-                display_voucher_result(result, text)
+                display_voucher_result(result, text, verdict_result)
 
                 # 如果用户之前确认了科目选择，展示对照
                 if capitalization_confirmed and user_chosen_account:
