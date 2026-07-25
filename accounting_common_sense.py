@@ -429,28 +429,97 @@ def _fuzzy_match_account(text: str):
     return None
 
 
+def _extract_all_amounts(text: str):
+    """
+    提取文本中所有金额，并标注每个金额的上下文标签。
+    返回列表，每项为 (数值, 标签, 原始匹配文本)。
+
+    标签分类规则：
+    - "价款": 购买价款、支付价款、价款、售价、价格
+    - "手续费": 手续费、佣金、交易费
+    - "运费": 运输费、运费
+    - "税额": 增值税、税额、税金
+    - "普通": 无特定上下文的金额（兜底）
+
+    支持千位分隔符和中文单位（万/千）。
+    """
+    text = text.replace(",", "")  # 去千位分隔符
+
+    # 关键词→标签映射（按优先级，越靠前优先级越高）
+    KEYWORD_LABELS = [
+        (["价款", "售价", "价格", "购买", "购入", "支付价款"], "价款"),
+        (["手续费", "佣金", "交易费"], "手续费"),
+        (["运输费", "运费"], "运费"),
+        (["增值税", "税额", "税金", "进项税", "销项税"], "税额"),
+    ]
+
+    def _classify(match_start, match_end):
+        """根据金额前的最近关键词判断标签"""
+        # 取金额前20个字符作为上下文
+        before = text[max(0, match_start - 20):match_start]
+        best_label = "普通"
+        best_pos = -1  # 关键词位置（越大越近）
+        for keywords, label in KEYWORD_LABELS:
+            for kw in keywords:
+                pos = before.rfind(kw)  # 找最后出现的位置（离金额最近）
+                if pos > best_pos:
+                    best_pos = pos
+                    best_label = label
+        return best_label
+
+    results = []
+
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(万\s*元|万|千\s*元|千|元|块钱)", text):
+        raw_val = m.group(1)
+        unit = m.group(2)
+
+        val = float(raw_val)
+        if "万" in unit:
+            val *= 10000
+        elif "千" in unit:
+            val *= 1000
+
+        label = _classify(m.start(), m.end())
+        ctx_start = max(0, m.start() - 12)
+        ctx_end = min(len(text), m.end())
+        context = text[ctx_start:ctx_end]
+
+        results.append((val, label, context.strip()))
+
+    # 兜底：匹配纯数字
+    if not results:
+        for m in re.finditer(r"(\d+(?:\.\d+)?)", text):
+            val = float(m.group(1))
+            label = _classify(m.start(), m.end())
+            results.append((val, label, ""))
+            break
+
+    return results
+
+
 def _extract_amount_for_check(text: str):
     """
-    从文本中提取金额（用于资本化门槛判断）。
-    支持格式：8000元、8000.00元、8000 元、花了8000、8000块钱
+    提取文本中用于资本化门槛判断的金额。
+    优先级：价款 > 运费 > 普通金额。
+    排除手续费、税额等不应计入资产成本的金额。
     """
-    patterns = [
-        r"(\d+\.?\d*)\s*万元",
-        r"(\d+\.?\d*)\s*万",
-        r"(\d+\.?\d*)\s*元",
-        r"花了\s*(\d+\.?\d*)",
-        r"(\d+\.?\d*)\s*块钱",
-        r"(\d+\.?\d*)",
-    ]
-    for pat in patterns:
-        match = re.search(pat, text)
-        if match:
-            val = float(match.group(1))
-            # 如果是"万元"单位，乘以10000
-            if "万" in pat and "元" not in pat:
-                val *= 10000
+    amounts = _extract_all_amounts(text)
+    if not amounts:
+        return None
+
+    # 优先取"价款"标签的金额
+    for val, label, _ in amounts:
+        if label == "价款":
             return val
-    return None
+    # 其次取"运费"标签
+    for val, label, _ in amounts:
+        if label == "运费":
+            return val
+    # 兜底取第一个非手续费/税额的金额
+    for val, label, _ in amounts:
+        if label not in ("手续费", "税额"):
+            return val
+    return amounts[0][0] if amounts else None
 
 
 def render_capitalization_ui(verdict_result: dict):

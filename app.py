@@ -89,38 +89,67 @@ st.markdown(
 # ─── 页面标题 ───────────────────────────────────────────────
 st.markdown("<h1>📒 智能会计凭证推荐系统</h1>", unsafe_allow_html=True)
 st.markdown(
-    '<p class="subtitle">输入业务描述，系统优先匹配30个高频规则库，未命中则调用 AI 智能推荐</p>',
+    '<p class="subtitle">输入业务描述，系统自动匹配 130+ 会计场景，未命中则调用 AI 智能推荐</p>',
     unsafe_allow_html=True,
 )
 
+# ─── 侧边栏：历史记录 + 场景搜索 ──────────────────────────
+with st.sidebar:
+    st.markdown("### 🕐 最近查询")
+    if "query_history" not in st.session_state:
+        st.session_state["query_history"] = []
+
+    if st.session_state["query_history"]:
+        for h in reversed(st.session_state["query_history"][-8:]):
+            if st.button(f"📌 {h[:30]}...", key=f"hist_{hash(h)}", width="stretch"):
+                st.session_state["user_input"] = h
+                st.session_state["recommend_triggered"] = True
+                st.session_state["recommend_text"] = h
+                st.rerun()
+        if st.button("🗑️ 清空历史", width="stretch"):
+            st.session_state["query_history"] = []
+            st.rerun()
+    else:
+        st.caption("暂无查询记录")
+
+    st.markdown("---")
+    st.markdown("### 🔍 场景搜索")
+    search_kw = st.text_input("搜索关键词", placeholder="如：折旧、理财、报废...", label_visibility="collapsed")
+    if search_kw:
+        from mock_data import MOCK_SCENARIOS
+        found = [s for s in MOCK_SCENARIOS if search_kw in s["description"]]
+        if found:
+            for s in found[:6]:
+                if st.button(f"📄 {s['description'][:28]}", key=f"search_{s['id']}", width="stretch"):
+                    st.session_state["user_input"] = s["description"]
+                    st.session_state["recommend_triggered"] = True
+                    st.session_state["recommend_text"] = s["description"]
+                    st.rerun()
+        else:
+            st.caption("未找到匹配场景")
+
 # ─── 示例场景快速入口 ──────────────────────────────────────
-st.markdown("**💡 试试输入这些场景：**")
-cols = st.columns(5)
+st.markdown("**💡 高频场景一键体验：**")
+cols = st.columns(3)
 examples = [
-    "昨天请客户吃饭花了800元",
     "购买办公用品花了500元",
-    "员工出差报销差旅费1200元",
     "支付办公室房租6000元",
-    "购买一台电脑8000元",
+    "计提本月员工工资总额2万元",
 ]
 for i, example in enumerate(examples):
     with cols[i]:
-        if st.button(example, key=f"example_{i}", use_container_width=True):
+        if st.button(example, key=f"example_{i}", width="stretch"):
             st.session_state["user_input"] = example
 
-# ─── 额外示例（第二行） ────────────────────────────────────
-st.markdown("**或者试试这些：**")
-cols2 = st.columns(5)
+cols2 = st.columns(3)
 examples2 = [
-    "支付员工工资5万元",
-    "收到客户货款15000元",
-    "支付水电费1500元",
-    "购买原材料一批30000元",
-    "支付广告推广费2500元",
+    "公司报废一台设备，原值50万已提折旧48万，清理费2000残料收入3000",
+    "股东以一台旧的机器设备入股，作价100万",
+    "上月暂估入库5万，本月收到发票实际4.8万税额6240",
 ]
 for i, example in enumerate(examples2):
     with cols2[i]:
-        if st.button(example, key=f"example2_{i}", use_container_width=True):
+        if st.button(example, key=f"example2_{i}", width="stretch"):
             st.session_state["user_input"] = example
 
 # ─── 输入区域 ───────────────────────────────────────────────
@@ -138,7 +167,7 @@ with col2:
     recommend_clicked = st.button(
         "✨ 智能推荐凭证",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     )
 
 # ─── AI 调用函数（大模型兜底匹配） ──────────────────────────
@@ -402,7 +431,7 @@ def display_voucher_result(result, user_input: str, verdict_result: dict = None)
                 })
         st.dataframe(
             voucher_data,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "方向": st.column_config.TextColumn("方向", width="small"),
@@ -460,7 +489,7 @@ def display_voucher_result(result, user_input: str, verdict_result: dict = None)
         ]
         st.dataframe(
             voucher_data,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "方向": st.column_config.TextColumn("方向", width="small"),
@@ -508,6 +537,43 @@ def display_voucher_result(result, user_input: str, verdict_result: dict = None)
             )
     else:
         st.success("✅ 经初步校验，该笔业务分录合理，未发现明显税会差异。")
+
+    # ── 导出按钮 ──
+    st.markdown("---")
+    exp_col1, exp_col2 = st.columns([1, 4])
+    with exp_col1:
+        voucher_text = _build_voucher_text(result, user_input, is_multi)
+        st.download_button(
+            "📥 导出分录",
+            data=voucher_text,
+            file_name="会计分录.txt",
+            mime="text/plain",
+            width="stretch",
+        )
+
+
+def _build_voucher_text(result, user_input: str, is_multi: bool) -> str:
+    """构建可导出的分录文本"""
+    lines = ["=" * 50, "  智能会计凭证推荐系统 - 会计分录", "=" * 50, ""]
+    lines.append(f"业务描述：{user_input}")
+    lines.append("")
+    if is_multi:
+        for i, e in enumerate(result.get("_entries", []), 1):
+            lines.append(f"第{i}笔：{e['description']}")
+            if e.get("debit_amount", 0) > 0:
+                lines.append(f"  借：{e['debit_account']}  ¥{e['debit_amount']:,.2f}")
+            if e.get("credit_amount", 0) > 0:
+                lines.append(f"  贷：{e['credit_account']}  ¥{e['credit_amount']:,.2f}")
+            if e.get("tax_note"):
+                lines.append(f"  注：{e['tax_note']}")
+            lines.append("")
+    else:
+        lines.append(f"借：{result['debit_account']}  ¥{result['debit_amount']:,.2f}")
+        lines.append(f"贷：{result['credit_account']}  ¥{result['credit_amount']:,.2f}")
+    if result.get("warning"):
+        lines.append(f"\n⚠️ 校验提示：{result['warning']}")
+    lines.append(f"\n{'=' * 50}")
+    return "\n".join(lines)
 
 
 # ─── 展示预设场景表格（辅助函数） ──────────────────────────
@@ -565,7 +631,7 @@ def _show_scenario_table():
 
         st.dataframe(
             table_data,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "序号": st.column_config.NumberColumn("序号", width="small"),
@@ -582,6 +648,10 @@ def _show_scenario_table():
 if recommend_clicked:
     st.session_state["recommend_triggered"] = True
     st.session_state["recommend_text"] = user_input.strip()
+    # 记录到查询历史
+    text = user_input.strip()
+    if text and text not in st.session_state.get("query_history", []):
+        st.session_state["query_history"] = st.session_state.get("query_history", []) + [text]
     # 清除展示标记，让新的推荐可以正常展示
     st.session_state["_displayed_in_this_run"] = False
 
@@ -747,7 +817,7 @@ if st.session_state.get("recommend_triggered", False):
 
             # 检查用户是否已点击"确认并生成凭证"
             if not st.session_state.get("voucher_confirmed", False):
-                if st.button("✅ 确认并生成凭证", key="confirm_voucher", type="primary", use_container_width=True):
+                if st.button("✅ 确认并生成凭证", key="confirm_voucher", type="primary", width="stretch"):
                     st.session_state["voucher_confirmed"] = True
                     st.rerun()
                 st.info("👆 请确认上述预检结果无误后，点击上方按钮生成推荐凭证。")
@@ -785,7 +855,7 @@ if st.session_state.get("recommend_triggered", False):
                 "⚠️ **当前描述较复杂，暂未匹配到精准科目。"
                 "建议您选择下方预设场景，或者拆分录入。**"
             )
-            if st.button("📝 手工入账", type="secondary", use_container_width=True):
+            if st.button("📝 手工入账", type="secondary", width="stretch"):
                 st.info(
                     "请手动录入会计分录：\n\n"
                     "借：____________________  ￥______\n"
@@ -834,7 +904,7 @@ with st.expander("📝 展开手工录入凭证", expanded=False):
             key="manual_amount",
         )
 
-    if st.button("📋 生成手工凭证", type="primary", use_container_width=True):
+    if st.button("📋 生成手工凭证", type="primary", width="stretch"):
         if not manual_debit or not manual_credit or not manual_amount:
             st.warning("⚠️ 请完整填写借方科目、贷方科目和金额！")
         else:
@@ -884,7 +954,7 @@ with st.expander("📝 展开手工录入凭证", expanded=False):
             ]
             st.dataframe(
                 voucher_data,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "方向": st.column_config.TextColumn("方向", width="small"),
