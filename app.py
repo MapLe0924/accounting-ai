@@ -175,112 +175,76 @@ with col2:
 def call_ai_for_recommendation(user_text: str):
     """
     当规则库匹配不到时，调用大模型 API 进行智能模糊匹配。
-    使用 Ollama（本地）或 OpenAI 兼容接口。
-    如果调用失败，返回 None。
+    优先级：DeepSeek（免费API）→ Ollama（本地）→ OpenAI 兼容接口。
     """
-    # ── 优先尝试本地 Ollama ──
-    ollama_payload = {
-        "model": "qwen2.5:7b",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "你是一位经验丰富的会计专家。请根据用户输入的业务描述，"
-                    "推荐最合适的会计分录（借方科目、贷方科目、金额）。"
-                    "请严格按照以下 JSON 格式返回，不要包含其他文字：\n"
-                    '{"debit_account":"借方科目","credit_account":"贷方科目",'
-                    '"amount":数字金额,"description":"业务说明","warning":"校验提示或无"}'
-                ),
-            },
-            {"role": "user", "content": f"业务描述：{user_text}"},
-        ],
-        "temperature": 0.1,
-        "stream": False,
-    }
+    system_prompt = (
+        "你是一位经验丰富的会计专家。请根据用户输入的业务描述，"
+        "推荐最合适的会计分录（借方科目、贷方科目、金额）。"
+        "请严格按照以下 JSON 格式返回，不要包含其他文字：\n"
+        '{"debit_account":"借方科目","credit_account":"贷方科目",'
+        '"amount":数字金额,"description":"业务说明","warning":"校验提示或无"}'
+    )
 
-    # 尝试调用 Ollama
-    try:
-        req = urllib.request.Request(
-            "http://localhost:11434/api/chat",
-            data=json.dumps(ollama_payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+    def _parse_response(content):
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+        result = json.loads(content)
+        return {
+            "debit_account": result["debit_account"],
+            "credit_account": result["credit_account"],
+            "debit_amount": float(result["amount"]),
+            "credit_amount": float(result["amount"]),
+            "description": result.get("description", ""),
+            "warning": result.get("warning"),
+            "source": "ai",
+        }
+
+    def _call_api(url, payload, headers):
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                      headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            content = body["message"]["content"].strip()
-            # 提取 JSON（可能被 markdown 包裹）
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-            result = json.loads(content)
-            return {
-                "debit_account": result["debit_account"],
-                "credit_account": result["credit_account"],
-                "debit_amount": float(result["amount"]),
-                "credit_amount": float(result["amount"]),
-                "description": result.get("description", ""),
-                "warning": result.get("warning"),
-                "source": "ai",
-            }
+            return json.loads(resp.read().decode("utf-8"))
+
+    # ── 1. DeepSeek API（免费额度，无需本地部署）──
+    try:
+        payload = {"model": "deepseek-chat", "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"业务描述：{user_text}"},
+        ], "temperature": 0.1, "stream": False}
+        body = _call_api("https://api.deepseek.com/v1/chat/completions", payload,
+                         {"Content-Type": "application/json",
+                          "Authorization": f"Bearer {st.secrets.get('DEEPSEEK_API_KEY', '')}"})
+        return _parse_response(body["choices"][0]["message"]["content"].strip())
     except Exception:
         pass
 
-    # ── 如果 Ollama 不可用，尝试 OpenAI 兼容接口 ──
-    openai_payload = {
-        "model": "gpt-3.5-turbo",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "你是一位会计专家。根据用户输入的业务描述，"
-                    "推荐会计分录。仅返回 JSON："
-                    '{"debit_account":"借方科目","credit_account":"贷方科目",'
-                    '"amount":数字金额,"description":"说明","warning":"提示或无"}'
-                ),
-            },
-            {"role": "user", "content": f"业务描述：{user_text}"},
-        ],
-        "temperature": 0.1,
-    }
-
-    # 从 secrets 或环境变量读取 API Key
-    api_key = ""
+    # ── 2. 本地 Ollama ──
     try:
-        api_key = st.secrets.get("OPENAI_API_KEY", "") or ""
+        body = _call_api("http://localhost:11434/api/chat",
+                         {"model": "qwen2.5:7b", "messages": [
+                             {"role": "system", "content": system_prompt},
+                             {"role": "user", "content": f"业务描述：{user_text}"},
+                         ], "temperature": 0.1, "stream": False},
+                         {"Content-Type": "application/json"})
+        return _parse_response(body["message"]["content"].strip())
     except Exception:
-        api_key = ""
-    if not api_key:
-        return None
+        pass
 
+    # ── 3. OpenAI 兼容接口 ──
     try:
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=json.dumps(openai_payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            content = body["choices"][0]["message"]["content"].strip()
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-            result = json.loads(content)
-            return {
-                "debit_account": result["debit_account"],
-                "credit_account": result["credit_account"],
-                "debit_amount": float(result["amount"]),
-                "credit_amount": float(result["amount"]),
-                "description": result.get("description", ""),
-                "warning": result.get("warning"),
-                "source": "ai",
-            }
+        api_key = st.secrets.get("OPENAI_API_KEY", "")
+        if not api_key:
+            return None
+        body = _call_api("https://api.openai.com/v1/chat/completions",
+                         {"model": "gpt-3.5-turbo", "messages": [
+                             {"role": "system", "content": system_prompt},
+                             {"role": "user", "content": f"业务描述：{user_text}"},
+                         ], "temperature": 0.1},
+                         {"Content-Type": "application/json",
+                          "Authorization": f"Bearer {api_key}"})
+        return _parse_response(body["choices"][0]["message"]["content"].strip())
     except Exception:
         return None
 
