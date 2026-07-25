@@ -499,7 +499,13 @@ def display_voucher_result(result, user_input: str, verdict_result: dict = None)
         risk_color = "#28a745"
 
     avg_conf = sum(a["confidence"] for a in audit_results) // len(audit_results)
-    st.markdown(f"**风险等级：**<span style='color:{risk_color};font-weight:600;font-size:1.1rem;'>{risk_badge}</span>　|　**置信度：**{avg_conf}%　|　**审计轨迹：**{len(audit_results)}笔分录已校验", unsafe_allow_html=True)
+    st.markdown(
+        f"<strong>风险等级：</strong>"
+        f"<span style='color:{risk_color};font-weight:600;font-size:1.1rem;'>{risk_badge}</span>"
+        f"　|　<strong>置信度：</strong>{avg_conf}%"
+        f"　|　<strong>审计轨迹：</strong>{len(audit_results)}笔分录已校验",
+        unsafe_allow_html=True,
+    )
 
     # 展示审计发现
     all_findings = []
