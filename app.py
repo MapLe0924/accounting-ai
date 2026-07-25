@@ -464,43 +464,77 @@ def display_voucher_result(result, user_input: str, verdict_result: dict = None)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── 专家校验区域 ──
+    # ── 智能审计区域 ──
     st.markdown("---")
-    st.markdown("### 🔍 专家校验")
+    st.markdown("### 🔍 智能审计")
 
-    warnings = []
+    from audit_engine import audit_voucher
 
+    audit_results = []
     if is_multi:
-        # 多分录的校验提示
-        if result.get("warning"):
-            warnings.append(f"⚠️ {result['warning']}")
-        # 自产产品发福利的专项校验
-        warnings.append(
-            "⚠️ 自产产品发福利视同销售，企业所得税需确认收入，"
-            "增值税需计提销项税额。福利费不超过工资总额14%的部分准予税前扣除。"
-        )
+        for e in result.get("_entries", []):
+            d = e.get("debit_account", "")
+            c = e.get("credit_account", "")
+            amt = max(e.get("debit_amount", 0), e.get("credit_amount", 0))
+            audit_results.append(audit_voucher(d, c, amt, e.get("description", ""), result.get("source", "rule")))
     else:
-        # 规则1：业务招待费超过2000元
-        if "业务招待" in result["debit_account"] and result["debit_amount"] > 2000:
-            warnings.append(
-                "⚠️ 业务招待费金额超过2000元，请确认是否真实合理，"
-                "企业所得税汇算清缴时需按60%限额扣除（最高不超过当年销售收入的5‰）。"
-            )
+        audit_results.append(audit_voucher(
+            result["debit_account"], result["credit_account"],
+            result.get("debit_amount", 0), "", result.get("source", "rule")
+        ))
 
-        # 规则2：规则库自带的校验提示
-        if result.get("warning"):
-            warnings.append(f"⚠️ {result['warning']}")
+    # 汇总风险等级
+    all_risk = [a["risk_level"] for a in audit_results]
+    if "high" in all_risk:
+        risk_badge = "🔴 高风险"
+        risk_color = "#dc3545"
+    elif "medium" in all_risk:
+        risk_badge = "🟡 中风险"
+        risk_color = "#ffc107"
+    elif "low" in all_risk:
+        risk_badge = "🟢 低风险"
+        risk_color = "#28a745"
+    else:
+        risk_badge = "✅ 无风险"
+        risk_color = "#28a745"
 
-    if warnings:
-        for w in warnings:
+    avg_conf = sum(a["confidence"] for a in audit_results) // len(audit_results)
+    st.markdown(f"**风险等级：**<span style='color:{risk_color};font-weight:600;font-size:1.1rem;'>{risk_badge}</span>　|　**置信度：**{avg_conf}%　|　**审计轨迹：**{len(audit_results)}笔分录已校验", unsafe_allow_html=True)
+
+    # 展示审计发现
+    all_findings = []
+    all_tax = []
+    for a in audit_results:
+        all_findings.extend(a["findings"])
+        all_tax.extend(a["tax_risks"])
+
+    if all_findings:
+        st.markdown("#### ⚠️ 合规发现")
+        for f in all_findings:
+            sev_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(f["severity"], "ℹ️")
             st.markdown(
                 f'<div class="warning-box">'
-                f'<span class="icon">⚠️</span> {w}'
+                f'{sev_icon} <strong>{f["type"]}</strong><br>'
+                f'{f["message"]}<br>'
+                f'<small>💡 {f["suggestion"]}</small>'
                 f"</div>",
                 unsafe_allow_html=True,
             )
-    else:
-        st.success("✅ 经初步校验，该笔业务分录合理，未发现明显税会差异。")
+
+    if all_tax:
+        st.markdown("#### 📋 税务风险提示")
+        for t in all_tax:
+            sev_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(t["severity"], "ℹ️")
+            st.markdown(
+                f'<div class="warning-box" style="border-left-color:#0dcaf0;">'
+                f'{sev_icon} <strong>{t["type"]}</strong><br>'
+                f'{t["message"]}'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    if not all_findings and not all_tax:
+        st.success("✅ 智能审计通过，该笔分录科目选择、借贷方向、金额均符合会计准则，未发现税会差异。")
 
     # ── 导出按钮 ──
     st.markdown("---")
