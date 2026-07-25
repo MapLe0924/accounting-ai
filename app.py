@@ -258,16 +258,29 @@ def call_ai_for_recommendation(user_text: str):
 
 # ─── 展示推荐结果（通用函数） ──────────────────────────────
 
-def display_voucher_result(result: dict, user_input: str, verdict_result: dict = None):
-    """展示凭证推荐结果卡片、表格、校验区域"""
+def display_voucher_result(result, user_input: str, verdict_result: dict = None):
+    """
+    展示凭证推荐结果卡片、表格、校验区域。
+    支持单条分录（dict）和多条分录（dict with _multi_entry=True）。
+    """
 
-    is_ai = result.get("source") == "ai"
+    # ── 判断是否为多分录 ──
+    is_multi = isinstance(result, dict) and result.get("_multi_entry")
+    is_ai = not is_multi and result.get("source") == "ai"
 
     # ── 根据预检结果动态设置置信度 ──
-    if verdict_result:
+    if is_multi:
+        confidence_badge = (
+            '<span style="'
+            "display:inline-block; background:#d4edda; color:#155724; "
+            "border:1px solid #c3e6cb; border-radius:20px; "
+            "padding:0.3rem 1rem; font-size:0.85rem; font-weight:600; "
+            "margin-bottom:0.8rem;"
+            '">✅ 规则库精准匹配（置信度 95%）</span>'
+        )
+    elif verdict_result:
         v = verdict_result["verdict"]
         c = verdict_result["confidence"]
-        # 费用化/资本化高置信度 + 规则库匹配 = 95%
         if not is_ai and ((v == "expense" and c == "high") or (v == "capital" and c == "high")):
             confidence_badge = (
                 '<span style="'
@@ -278,7 +291,6 @@ def display_voucher_result(result: dict, user_input: str, verdict_result: dict =
                 '">✅ 规则库精准匹配（置信度 95%）</span>'
             )
         elif not is_ai:
-            # 规则库匹配但预检置信度不高（如跨系统判断）
             confidence_badge = (
                 '<span style="'
                 "display:inline-block; background:#fff3cd; color:#856404; "
@@ -297,7 +309,6 @@ def display_voucher_result(result: dict, user_input: str, verdict_result: dict =
                 '">⚠️ AI 智能推荐（置信度 70%，请人工复核）</span>'
             )
     else:
-        # 无预检结果时的默认值
         if not is_ai:
             confidence_badge = (
                 '<span style="'
@@ -325,67 +336,138 @@ def display_voucher_result(result: dict, user_input: str, verdict_result: dict =
         unsafe_allow_html=True,
     )
 
-    # AI 推荐标注（已由置信度标签替代，保留向下兼容）
     if is_ai:
-        st.warning(
-            "🤖 此为 AI 推荐结果，请人工复核确认后再做账！"
+        st.warning("🤖 此为 AI 推荐结果，请人工复核确认后再做账！")
+
+    # ── 多分录展示（自产产品发福利等） ──
+    if is_multi:
+        entries = result["_entries"]
+        # 逐条展示每笔分录
+        for idx, entry in enumerate(entries, 1):
+            st.markdown(f"**第 {idx} 笔分录：{entry['description']}**")
+            col_left, col_right = st.columns([1, 1])
+            with col_left:
+                st.markdown("**借方**")
+                amt = entry.get("debit_amount", 0)
+                if amt and amt > 0:
+                    st.markdown(
+                        f'<p class="debit-row" style="font-size:1.1rem;">'
+                        f'📌 {entry["debit_account"]}</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f'<p class="amount-cell debit-row" style="font-size:1.3rem;">'
+                        f'¥ {amt:,.2f}</p>',
+                        unsafe_allow_html=True,
+                    )
+            with col_right:
+                st.markdown("**贷方**")
+                amt = entry.get("credit_amount", 0)
+                if amt and amt > 0:
+                    st.markdown(
+                        f'<p class="credit-row" style="font-size:1.1rem;">'
+                        f'📌 {entry["credit_account"]}</p>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f'<p class="amount-cell credit-row" style="font-size:1.3rem;">'
+                        f'¥ {amt:,.2f}</p>',
+                        unsafe_allow_html=True,
+                    )
+            if entry.get("tax_note"):
+                st.caption(f"💡 {entry['tax_note']}")
+            if idx < len(entries):
+                st.markdown("<hr style='margin: 0.5rem 0; opacity:0.3;'>", unsafe_allow_html=True)
+
+        # 多分录的完整分录汇总表
+        st.markdown("<hr style='margin: 1rem 0;'>", unsafe_allow_html=True)
+        st.markdown("**📊 完整分录汇总**")
+        voucher_data = []
+        for entry in entries:
+            d_amt = entry.get("debit_amount", 0)
+            c_amt = entry.get("credit_amount", 0)
+            if d_amt and d_amt > 0:
+                voucher_data.append({
+                    "方向": "借",
+                    "科目": entry["debit_account"],
+                    "金额": f'¥ {d_amt:,.2f}',
+                    "说明": entry["description"],
+                })
+            if c_amt and c_amt > 0:
+                voucher_data.append({
+                    "方向": "贷",
+                    "科目": entry["credit_account"],
+                    "金额": f'¥ {c_amt:,.2f}',
+                    "说明": entry["description"],
+                })
+        st.dataframe(
+            voucher_data,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "方向": st.column_config.TextColumn("方向", width="small"),
+                "科目": st.column_config.TextColumn("会计科目", width="large"),
+                "金额": st.column_config.TextColumn("金额", width="medium"),
+                "说明": st.column_config.TextColumn("业务说明", width="large"),
+            },
         )
 
-    # 表格展示
-    col_left, col_right = st.columns([1, 1])
-    with col_left:
-        st.markdown("**借方**")
-        st.markdown(
-            f'<p class="debit-row" style="font-size:1.1rem;">'
-            f'📌 {result["debit_account"]}</p>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<p class="amount-cell debit-row" style="font-size:1.3rem;">'
-            f'¥ {result["debit_amount"]:,.2f}</p>',
-            unsafe_allow_html=True,
-        )
+    else:
+        # ── 单条分录展示（原有逻辑） ──
+        col_left, col_right = st.columns([1, 1])
+        with col_left:
+            st.markdown("**借方**")
+            st.markdown(
+                f'<p class="debit-row" style="font-size:1.1rem;">'
+                f'📌 {result["debit_account"]}</p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<p class="amount-cell debit-row" style="font-size:1.3rem;">'
+                f'¥ {result["debit_amount"]:,.2f}</p>',
+                unsafe_allow_html=True,
+            )
 
-    with col_right:
-        st.markdown("**贷方**")
-        st.markdown(
-            f'<p class="credit-row" style="font-size:1.1rem;">'
-            f'📌 {result["credit_account"]}</p>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<p class="amount-cell credit-row" style="font-size:1.3rem;">'
-            f'¥ {result["credit_amount"]:,.2f}</p>',
-            unsafe_allow_html=True,
-        )
+        with col_right:
+            st.markdown("**贷方**")
+            st.markdown(
+                f'<p class="credit-row" style="font-size:1.1rem;">'
+                f'📌 {result["credit_account"]}</p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<p class="amount-cell credit-row" style="font-size:1.3rem;">'
+                f'¥ {result["credit_amount"]:,.2f}</p>',
+                unsafe_allow_html=True,
+            )
 
-    # 分隔线
-    st.markdown("<hr style='margin: 1rem 0;'>", unsafe_allow_html=True)
+        # 分隔线
+        st.markdown("<hr style='margin: 1rem 0;'>", unsafe_allow_html=True)
 
-    # 完整分录表格
-    st.markdown("**📊 完整分录**")
-    voucher_data = [
-        {
-            "方向": "借",
-            "科目": result["debit_account"],
-            "金额": f'¥ {result["debit_amount"]:,.2f}',
-        },
-        {
-            "方向": "贷",
-            "科目": result["credit_account"],
-            "金额": f'¥ {result["credit_amount"]:,.2f}',
-        },
-    ]
-    st.dataframe(
-        voucher_data,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "方向": st.column_config.TextColumn("方向", width="small"),
-            "科目": st.column_config.TextColumn("会计科目", width="large"),
-            "金额": st.column_config.TextColumn("金额", width="medium"),
-        },
-    )
+        # 完整分录表格
+        st.markdown("**📊 完整分录**")
+        voucher_data = [
+            {
+                "方向": "借",
+                "科目": result["debit_account"],
+                "金额": f'¥ {result["debit_amount"]:,.2f}',
+            },
+            {
+                "方向": "贷",
+                "科目": result["credit_account"],
+                "金额": f'¥ {result["credit_amount"]:,.2f}',
+            },
+        ]
+        st.dataframe(
+            voucher_data,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "方向": st.column_config.TextColumn("方向", width="small"),
+                "科目": st.column_config.TextColumn("会计科目", width="large"),
+                "金额": st.column_config.TextColumn("金额", width="medium"),
+            },
+        )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -395,16 +477,26 @@ def display_voucher_result(result: dict, user_input: str, verdict_result: dict =
 
     warnings = []
 
-    # 规则1：业务招待费超过2000元
-    if "业务招待" in result["debit_account"] and result["debit_amount"] > 2000:
+    if is_multi:
+        # 多分录的校验提示
+        if result.get("warning"):
+            warnings.append(f"⚠️ {result['warning']}")
+        # 自产产品发福利的专项校验
         warnings.append(
-            "⚠️ 业务招待费金额超过2000元，请确认是否真实合理，"
-            "企业所得税汇算清缴时需按60%限额扣除（最高不超过当年销售收入的5‰）。"
+            "⚠️ 自产产品发福利视同销售，企业所得税需确认收入，"
+            "增值税需计提销项税额。福利费不超过工资总额14%的部分准予税前扣除。"
         )
+    else:
+        # 规则1：业务招待费超过2000元
+        if "业务招待" in result["debit_account"] and result["debit_amount"] > 2000:
+            warnings.append(
+                "⚠️ 业务招待费金额超过2000元，请确认是否真实合理，"
+                "企业所得税汇算清缴时需按60%限额扣除（最高不超过当年销售收入的5‰）。"
+            )
 
-    # 规则2：规则库自带的校验提示
-    if result.get("warning"):
-        warnings.append(f"⚠️ {result['warning']}")
+        # 规则2：规则库自带的校验提示
+        if result.get("warning"):
+            warnings.append(f"⚠️ {result['warning']}")
 
     if warnings:
         for w in warnings:
@@ -441,6 +533,9 @@ def _show_scenario_table():
                     "source": "演示数据",
                 })
         for r in RULE_DATABASE:
+            # 跳过多分录特殊标记规则（如自产产品发福利），避免显示原始标记字符串
+            if r.get("_multi_entry"):
+                continue
             key = (r["debit"], r["credit"])
             if key not in seen:
                 seen.add(key)
@@ -487,6 +582,115 @@ def _show_scenario_table():
 if recommend_clicked:
     st.session_state["recommend_triggered"] = True
     st.session_state["recommend_text"] = user_input.strip()
+    # 清除展示标记，让新的推荐可以正常展示
+    st.session_state["_displayed_in_this_run"] = False
+
+# ─── 辅助函数：执行匹配并生成凭证结果 ──────────────────────
+
+def _run_matching(text: str, verdict_result: dict):
+    """
+    执行规则匹配/AI兜底，返回凭证结果。
+    返回值可以是：
+      - dict（单条分录，含 debit_account/credit_account 等）
+      - list[dict]（多条分录，如自产产品发福利）
+      - None（匹配失败）
+    """
+    # ── 第一层：规则库精确匹配（带标点过滤 + 超时保护） ──
+    import time as _time
+    _t0 = _time.time()
+    result = match_by_rule(text)
+    _elapsed = _time.time() - _t0
+
+    # 标点过滤后输入为空
+    if isinstance(result, dict) and result.get("_error") == "empty_input":
+        return {"_error": "empty_input"}
+
+    if result is not None:
+        # ── 检查是否是多分录标记（自产产品发福利等特殊业务） ──
+        if result.get("_multi_entry"):
+            # 优先使用结果中已携带的 _entries（来自 _scenario_to_result）
+            if result.get("_entries"):
+                return {
+                    "_multi_entry": True,
+                    "_entries": result["_entries"],
+                    "description": result["description"],
+                    "warning": result.get("warning"),
+                    "source": result.get("source", "rule"),
+                }
+
+            # 否则通过 _mock_id 从 MOCK_SCENARIOS 查找
+            mock_id = result.get("_mock_id")
+            if mock_id is not None:
+                from mock_data import MOCK_SCENARIOS
+                for scenario in MOCK_SCENARIOS:
+                    if scenario.get("id") == mock_id and "entries" in scenario:
+                        entries = scenario["entries"]
+                        return {
+                            "_multi_entry": True,
+                            "_entries": entries,
+                            "description": result["description"],
+                            "warning": result.get("warning"),
+                            "source": result.get("source", "rule"),
+                        }
+            # 多分录标记存在但未找到 entries → 降级为单分录展示
+            result["_multi_entry"] = False
+
+        # 如果是模糊匹配结果，用模糊匹配的科目覆盖规则库结果
+        if verdict_result.get("verdict") == "fuzzy_match":
+            fuzzy_acct = verdict_result.get("fuzzy_account", "")
+            if fuzzy_acct:
+                result["debit_account"] = fuzzy_acct
+                result["credit_account"] = "银行存款/应付账款"
+                result["description"] = f"模糊匹配：{fuzzy_acct}（请人工核实）"
+                result["confidence"] = "low"
+        return result
+
+    if _elapsed >= 3:
+        return {"_error": "timeout"}
+
+    # ── 第二层：AI 大模型兜底匹配 ──
+    with st.spinner("🤖 规则库未匹配到，正在调用 AI 智能分析..."):
+        result = call_ai_for_recommendation(text)
+
+    if result is not None:
+        # 如果是模糊匹配结果，用模糊匹配的科目覆盖 AI 结果
+        if verdict_result.get("verdict") == "fuzzy_match":
+            fuzzy_acct = verdict_result.get("fuzzy_account", "")
+            if fuzzy_acct:
+                result["debit_account"] = fuzzy_acct
+                result["credit_account"] = "银行存款/应付账款"
+                result["description"] = f"模糊匹配：{fuzzy_acct}（请人工核实）"
+                result["confidence"] = "low"
+        return result
+
+    return None
+
+
+def _display_matched_result(result, text: str, verdict_result: dict,
+                            capitalization_confirmed: bool, user_chosen_account: str):
+    """展示匹配到的凭证结果，并保存到 session_state。"""
+    display_voucher_result(result, text, verdict_result)
+
+    # 展示匹配到的规则说明
+    is_multi = isinstance(result, dict) and result.get("_multi_entry")
+    if not is_multi:
+        st.info(f"📌 匹配规则：{result['description']}")
+    else:
+        st.info(f"📌 匹配规则：{result['description']}")
+
+    # 如果用户之前确认了科目选择，展示对照
+    if capitalization_confirmed and user_chosen_account:
+        st.info(f"💡 您已确认选择「{user_chosen_account}」，与推荐结果不一致时请以您的判断为准。")
+
+    # 保存结果到 session_state，防止 rerun 后丢失
+    st.session_state["voucher_result"] = {
+        "result": result,
+        "text": text,
+        "verdict_result": verdict_result,
+        "capitalization_confirmed": capitalization_confirmed,
+        "user_chosen_account": user_chosen_account,
+    }
+
 
 # ─── 处理推荐逻辑 ───────────────────────────────────────────
 if st.session_state.get("recommend_triggered", False):
@@ -496,6 +700,18 @@ if st.session_state.get("recommend_triggered", False):
         st.warning("⚠️ 请先输入业务描述再点击推荐！")
         st.session_state["recommend_triggered"] = False
     else:
+        # ── 第〇层：标点过滤 + 空输入检测（在预检之前） ──
+        from rule_engine import _strip_punctuation, _clean_text
+        _stripped = _strip_punctuation(text)
+        _core = _clean_text(_stripped).strip()
+        if len(_core) <= 2:
+            st.warning(
+                "⚠️ **未识别到核心财税词汇，请补充关键业务词（如采购、维修、工资等）。**"
+            )
+            _show_scenario_table()
+            st.session_state["recommend_triggered"] = False
+            st.stop()
+
         # ── 第〇层：会计常识预检（资本化/费用化判断） ──
         st.markdown("---")
         st.markdown("### 🔶 会计常识预检")
@@ -514,96 +730,88 @@ if st.session_state.get("recommend_triggered", False):
             # 停止执行，等待用户确认
             st.stop()
 
-        # ── 高置信度预检（绿色框）也加一个确认按钮 ──
-        st.markdown("---")
-        st.markdown("### 📋 生成凭证")
+        # ── 模糊匹配结果 → 显示黄色提醒框 ──
+        if verdict_result.get("verdict") == "fuzzy_match":
+            fuzzy_acct = verdict_result.get("fuzzy_account", "")
+            st.warning(f"⚠️ **此为模糊匹配结果，请人工核实科目。** 系统推荐科目：`{fuzzy_acct}`")
 
-        # 检查用户是否已点击"确认并生成凭证"
-        if not st.session_state.get("voucher_confirmed", False):
-            if st.button("✅ 确认并生成凭证", key="confirm_voucher", type="primary", use_container_width=True):
-                st.session_state["voucher_confirmed"] = True
-                st.rerun()
-            st.info("👆 请确认上述预检结果无误后，点击上方按钮生成推荐凭证。")
-            _show_scenario_table()
-            st.stop()
-
-        # 用户已确认 → 清除 trigger 和确认状态（供下次使用）
-        st.session_state["recommend_triggered"] = False
-        st.session_state["voucher_confirmed"] = False
-
-        # 如果用户已确认模糊地带的科目选择
-        user_chosen_account = st.session_state.get("manual_account_selected", None)
+        # ── 判断用户是否已确认 ──
         capitalization_confirmed = st.session_state.get("capitalization_confirmed", False)
+        user_chosen_account = st.session_state.get("manual_account_selected", None)
 
-        # ── 第一层：规则库精确匹配 ──
-        result = match_by_rule(text)
+        # ── 高置信度预检（绿色框）也需要一个确认按钮 ──
+        # 但如果用户已经在 ambiguous/unknown 弹窗中确认过了，就不再显示此按钮
+        if not capitalization_confirmed:
+            st.markdown("---")
+            st.markdown("### 📋 生成凭证")
 
-        if result is not None:
-            # 规则库匹配成功，传入 verdict_result 用于置信度判断
-            display_voucher_result(result, text, verdict_result)
+            # 检查用户是否已点击"确认并生成凭证"
+            if not st.session_state.get("voucher_confirmed", False):
+                if st.button("✅ 确认并生成凭证", key="confirm_voucher", type="primary", use_container_width=True):
+                    st.session_state["voucher_confirmed"] = True
+                    st.rerun()
+                st.info("👆 请确认上述预检结果无误后，点击上方按钮生成推荐凭证。")
+                _show_scenario_table()
+                st.stop()
 
-            # 展示匹配到的规则说明
-            st.info(f"📌 匹配规则：{result['description']}")
+        # ── 执行匹配并生成凭证 ──
+        result = _run_matching(text, verdict_result)
 
-            # 如果用户之前确认了科目选择，展示对照
-            if capitalization_confirmed and user_chosen_account:
-                st.markdown(
-                    f'<div class="warning-box" style="background:#e8f4fd; border-color:#0d6efd;">'
-                    f'<span style="font-size:1rem;">💡 您已确认选择「{user_chosen_account}」，'
-                    f'与规则库推荐结果不一致时请以您的判断为准。</span>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+        # 展示结果（必须在清除 trigger 之前，否则底部 voucher_result 会重复渲染）
+        if isinstance(result, dict) and result.get("_error") == "empty_input":
+            st.warning(
+                "⚠️ **未识别到核心财税词汇，请补充关键业务词（如采购、维修、工资等）。**"
+            )
+            _show_scenario_table()
+
+        elif isinstance(result, dict) and result.get("_error") == "timeout":
+            st.warning(
+                "⚠️ **当前描述较复杂，暂未匹配到精准科目。"
+                "建议您选择下方预设场景，或者拆分录入。**"
+            )
+            _show_scenario_table()
+
+        elif result is not None:
+            _display_matched_result(result, text, verdict_result,
+                                    capitalization_confirmed, user_chosen_account)
+            # 标记已在当前 run 中展示过，防止底部 voucher_result 重复渲染
+            st.session_state["_displayed_in_this_run"] = True
+            # 清除 trigger，防止 rerun 后重复执行推荐逻辑
+            st.session_state["recommend_triggered"] = False
 
         else:
-            # ── 第二层：AI 大模型兜底匹配 ──
-            with st.spinner("🤖 规则库未匹配到，正在调用 AI 智能分析..."):
-                result = call_ai_for_recommendation(text)
-
-            if result is not None:
-                display_voucher_result(result, text, verdict_result)
-
-                # 如果用户之前确认了科目选择，展示对照
-                if capitalization_confirmed and user_chosen_account:
-                    st.markdown(
-                        f'<div class="warning-box" style="background:#e8f4fd; border-color:#0d6efd;">'
-                        f'<span style="font-size:1rem;">💡 您已确认选择「{user_chosen_account}」，'
-                        f'与 AI 推荐结果不一致时请以您的判断为准。</span>'
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-            else:
-                # 两层都失败 → 引导用户输入关键词 + 手工入账按钮
-                st.warning(
-                    "⚠️ **未找到匹配的高频场景，请尝试使用更准确的财税词汇描述，"
-                    "或点击下方【手工入账】按钮。**"
+            # 两层都失败 → 引导用户输入关键词 + 手工入账按钮
+            st.warning(
+                "⚠️ **当前描述较复杂，暂未匹配到精准科目。"
+                "建议您选择下方预设场景，或者拆分录入。**"
+            )
+            if st.button("📝 手工入账", type="secondary", use_container_width=True):
+                st.info(
+                    "请手动录入会计分录：\n\n"
+                    "借：____________________  ￥______\n"
+                    "贷：____________________  ￥______\n\n"
+                    "（建议咨询会计主管或参考《企业会计准则》确认科目）"
                 )
-                if st.button("📝 手工入账", type="secondary", use_container_width=True):
-                    st.info(
-                        "请手动录入会计分录：\n\n"
-                        "借：____________________  ￥______\n"
-                        "贷：____________________  ￥______\n\n"
-                        "（建议咨询会计主管或参考《企业会计准则》确认科目）"
-                    )
-
-            # ── 预设场景参考表格（规则库 + mock_data） ──
             _show_scenario_table()
+
+# ─── 如果 session 中有已保存的凭证结果且不是刚触发的推荐，直接展示 ──
+# 这确保用户刷新页面或 rerun 后不会丢失凭证
+# 注意：刚触发的推荐（recommend_triggered=True）已经在上面展示过了，
+# 这里只处理页面刷新后或非触发状态下的展示
+# 同时避免在同一 run 中重复展示（_displayed_in_this_run 标记）
+if (st.session_state.get("voucher_result")
+    and not st.session_state.get("recommend_triggered", False)
+    and not st.session_state.get("_displayed_in_this_run", False)):
+    saved = st.session_state["voucher_result"]
+    _display_matched_result(
+        saved["result"], saved["text"], saved["verdict_result"],
+        saved["capitalization_confirmed"], saved["user_chosen_account"],
+    )
 
 # ─── 手工录入凭证区域 ───────────────────────────────────────
 st.markdown("---")
-st.markdown(
-    """
-    <div class="manual-entry-section">
-        <div class="manual-entry-banner">
-            🛠️ <strong>专业财务人员手工干预区</strong>
-        </div>
-        <p style="color:#6c757d; font-size:0.9rem; margin-bottom:0.5rem;">
-            💡 <strong>提示：</strong>AI推荐仅供参考，实际做账请务必以会计准则为准。复杂业务请在此手工确认。
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("### 🛠️ 专业财务人员手工干预区")
+st.caption("💡 **提示：** AI推荐仅供参考，实际做账请务必以会计准则为准。复杂业务请在此手工确认。")
 
 with st.expander("📝 展开手工录入凭证", expanded=False):
     col_a, col_b, col_c = st.columns(3)
