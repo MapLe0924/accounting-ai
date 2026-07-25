@@ -1865,7 +1865,7 @@ def find_scenario(user_input: str):
         (["报废", "设备报废", "固定资产清理", "清理费", "残料", "残料收入", "报废清理", "变卖收入", "设备清理", "转入清理"], 43),  # id=44
         (["垫付", "垫付个税", "代垫", "代垫个税", "扣回个税", "个税垫付", "扣回", "垫付个人所得税", "代垫个人所得税", "从工资扣回", "从工资中扣回"], 44),  # id=45
         (["分红", "理财分红", "理财产品分红", "收到分红", "投资收益", "持有期间", "不保本理财分红"], 45),  # id=46
-        (["红冲", "暂估入库", "暂估", "红字冲销", "冲暂估", "暂估冲回", "暂估入库红冲", "红冲暂估", "收到发票实际"], 46),  # id=47
+        (["红冲", "暂估入库", "暂估", "红字冲销", "冲暂估", "暂估冲回", "暂估入库红冲", "红冲暂估", "收到发票实际"], 47),  # id=47
         # ── 二期扩展 ──
         (["支付货款", "支付欠款", "付货款", "支付供应商货款", "付供应商款"], 47),  # id=48
         (["退货", "采购退货", "原材料退货", "商品退货", "进货退回", "质量退货"], 48),  # id=49
@@ -1966,6 +1966,12 @@ def find_scenario(user_input: str):
     for keywords, scenario_id in keyword_map:
         for kw in keywords:
             if kw in user_input:
-                return MOCK_SCENARIOS[scenario_id]
+                # scenario_id 可能是 id 或旧索引，优先按 id 查找
+                for s in MOCK_SCENARIOS:
+                    if s["id"] == scenario_id:
+                        return s
+                # 兼容旧式索引
+                if 0 <= scenario_id < len(MOCK_SCENARIOS):
+                    return MOCK_SCENARIOS[scenario_id]
 
     return None
