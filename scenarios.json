@@ -1552,6 +1552,33 @@
     "credit_amount": 9300.0
   },
   {
+    "id": 140,
+    "description": "采购原材料一批，价款30,000元，增值税3,900元，货款尚未支付，材料已入库",
+    "warning": "材料已入库但货款未付，应确认应付账款；进项税额凭专票抵扣。",
+    "entries": [
+      {
+        "debit_account": "原材料",
+        "credit_account": "应付账款",
+        "debit_amount": 30000.0,
+        "credit_amount": 30000.0,
+        "description": "材料验收入库，按价款确认原材料",
+        "tax_note": null
+      },
+      {
+        "debit_account": "应交税费-应交增值税(进项税额)",
+        "credit_account": "应付账款",
+        "debit_amount": 3900.0,
+        "credit_amount": 3900.0,
+        "description": "取得增值税专用发票，确认进项税额",
+        "tax_note": "进项税额 = 30,000 × 13% = 3,900元，凭专票认证抵扣。"
+      }
+    ],
+    "debit_account": "原材料 / 应交税费-应交增值税(进项税额)",
+    "credit_account": "应付账款",
+    "debit_amount": 33900.0,
+    "credit_amount": 33900.0
+  },
+  {
     "id": 31,
     "description": "公司把自产的一批电脑，作为福利发放给员工，成本5万元，市场售价6万元",
     "warning": "自产产品发福利视同销售，需确认增值税销项税额；同时结转库存商品成本。",
